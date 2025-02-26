@@ -1,10 +1,22 @@
-import mongoose from "mongoose";
+import mongoose, { Document, Schema } from "mongoose";
 
-const messageSchema = new mongoose.Schema({
-  username: { type: String, required: true },
-  text: { type: String, required: true },
-  timestamp: { type: Date, default: Date.now },
-});
+interface IMessage extends Document {
+  username: string;
+  text: string;
+  topic: string; // Add topic field
+  timestamp: Date;
+}
 
-const Message = mongoose.model("Message", messageSchema);
+const messageSchema: Schema = new Schema(
+  {
+    username: { type: String, required: true },
+    text: { type: String, required: true },
+    topic: { type: String, required: true }, // Ensure the topic is stored
+    timestamp: { type: Date, default: Date.now },
+  },
+  { timestamps: true }
+);
+
+const Message = mongoose.model<IMessage>("Message", messageSchema);
+
 export default Message;

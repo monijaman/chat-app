@@ -1,67 +1,107 @@
-// Import necessary modules
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
 import { createServer } from "http";
 import mongoose from "mongoose";
 import { Server } from "socket.io";
-import Message from "./models/Message"; // Import Message model to interact with MongoDB
+import Message from "./models/Message"; // Import Message model
 
-// Load environment variables from .env file
 dotenv.config();
 
-// Set up MongoDB URI from environment variables or fallback to local URI
+// MongoDB URI
 const MONGO_URI = process.env.MONGO_URL || "mongodb://127.0.0.1:27017/chat-app";
 
-// Initialize Express app and HTTP server
+// Create Express app
 const app = express();
 const server = createServer(app);
-
-// Initialize socket.io with CORS configuration
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000", // Allow connections from frontend running on this port
-    methods: ["GET", "POST"], // Allow only GET and POST methods
+    origin: "http://localhost:3000", // Your client URL
+    methods: ["GET", "POST"],
   },
 });
 
-// Middleware to handle cross-origin requests
 app.use(cors());
 
-// Connect to MongoDB using the URI from environment variables
+// Connect to MongoDB
 mongoose
   .connect(MONGO_URI)
-  .then(() => console.log("✅ Connected to MongoDB")) // Log success message on successful connection
+  .then(() => console.log("✅ Connected to MongoDB"))
   .catch((err: unknown) => {
-    console.error("❌ MongoDB connection error:", err); // Log error if the connection fails
+    console.error("❌ MongoDB connection error:", err);
   });
 
-// Socket.io event listener for a new connection
+// Buffer to hold messages temporarily before saving
+const messageBuffer: {
+  username: string;
+  text: string;
+  topic: string;
+  timestamp: Date;
+}[] = [];
+const BATCH_SIZE = 100; // Save after this many messages
+const ARCHIVE_INTERVAL = 60000; // Archive every 1 minute
+
+// Function to save messages in bulk to MongoDB
+async function archiveMessages(messages: typeof messageBuffer) {
+  try {
+    await Message.insertMany(messages); // Save all buffered messages
+    console.log(`Archived ${messages.length} messages`);
+    messageBuffer.length = 0; // Clear the buffer after saving
+  } catch (error) {
+    console.error("Error archiving messages:", error);
+  }
+}
+
+// Set up an interval to archive messages periodically
+setInterval(() => {
+  if (messageBuffer.length > 0) {
+    archiveMessages(messageBuffer);
+  }
+}, ARCHIVE_INTERVAL);
+
+// Socket.IO connection
 io.on("connection", async (socket) => {
-  console.log(`User connected: ${socket.id}`); // Log when a new user connects
+  console.log(`User connected: ${socket.id}`);
 
-  // Retrieve previous messages from the database and send to the connected user
-  const messages = await Message.find().sort({ timestamp: 1 });
-  socket.emit("previousMessages", messages); // Emit previous messages to the client
-
-  // Event listener for new messages
-  socket.on("message", async (data: { username: string; text: string }) => {
-    // Create a new message in the database
-    const newMessage = new Message(data);
-    await newMessage.save(); // Save the new message to the database
-
-    // Broadcast the new message to all connected clients
-    io.emit("message", data); // Emit the message to all clients
+  // Send previous messages when a user connects
+  socket.on("joinTopic", async (topic: string) => {
+    const messages = await Message.find({ topic }).sort({ timestamp: 1 });
+    socket.emit("previousMessages", messages);
   });
 
-  // Event listener for when the user disconnects
+  // Handle incoming messages
+  socket.on(
+    "message",
+    async (data: { username: string; text: string; topic: string }) => {
+      messageBuffer.push({ ...data, timestamp: new Date() });
+
+      // If buffer reaches the batch size, archive messages
+      if (messageBuffer.length >= BATCH_SIZE) {
+        await archiveMessages(messageBuffer);
+      } else {
+        console.log(`Buffer size: ${messageBuffer.length}`);
+      }
+
+      io.emit("message", data); // Broadcast to all clients
+    }
+  );
+
+  // Handle disconnect
   socket.on("disconnect", () => {
-    console.log(`User disconnected: ${socket.id}`); // Log when a user disconnects
+    console.log(`User disconnected: ${socket.id}`);
   });
 });
 
-// Set the server to listen on a specific port (5000)
+// Graceful shutdown to archive remaining messages
+process.on("SIGINT", async () => {
+  console.log("Server shutting down... Archiving remaining messages...");
+  if (messageBuffer.length > 0) {
+    await archiveMessages(messageBuffer);
+  }
+  process.exit();
+});
+
 const PORT = 5000;
 server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`); // Log the server's URL when it starts
+  console.log(`Server running at http://localhost:${PORT}`);
 });
